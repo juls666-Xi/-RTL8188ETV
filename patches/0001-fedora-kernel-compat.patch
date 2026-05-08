@@ -1,0 +1,73 @@
+diff --git a/Makefile b/Makefile
+index 1234567..abcdefg 100644
+--- a/Makefile
++++ b/Makefile
+@@ -10,6 +10,15 @@ EXTRA_CFLAGS += -Wno-unused-variable
+ EXTRA_CFLAGS += -Wno-unused-function
+ EXTRA_CFLAGS += -Wno-unused
+
++# Fedora/Modern kernel compatibility flags
++EXTRA_CFLAGS += -Wno-implicit-fallthrough
++EXTRA_CFLAGS += -Wno-address-of-packed-member
++EXTRA_CFLAGS += -Wno-maybe-uninitialized
++EXTRA_CFLAGS += -Wno-discarded-qualifiers
++EXTRA_CFLAGS += -Wno-int-conversion
++EXTRA_CFLAGS += -Wno-cast-function-type
++EXTRA_CFLAGS += -Wno-format-overflow
++
+ EXTRA_CFLAGS += -I$(src)/include
+ EXTRA_CFLAGS += -I$(src)/core
+ EXTRA_CFLAGS += -I$(src)/hal/include
+@@ -20,6 +29,11 @@ EXTRA_CFLAGS += -I$(src)/hal/rtl8188e
+ EXTRA_CFLAGS += -I$(src)/hal/rtl8188e/usb
+ EXTRA_CFLAGS += -I$(src)/platform
+
++# Modern kernel API compatibility
++EXTRA_CFLAGS += -DCONFIG_IOCTL_CFG80211
++EXTRA_CFLAGS += -DCONFIG_CONCURRENT_MODE
++EXTRA_CFLAGS += -DCONFIG_MONITOR_MODE
++
+ EXTRA_LDFLAGS += --strip-debug
+
+ CONFIG_AUTOCFG_CP = n
+@@ -95,7 +109,12 @@ endif
+ ifeq ($(CONFIG_PLATFORM_I386_PC), y)
+ EXTRA_CFLAGS += -DCONFIG_LITTLE_ENDIAN
+-EXTRA_CFLAGS += -DCONFIG_IOCTL_CFG80211 -DCONFIG_CONCURRENT_MODE
+ EXTRA_CFLAGS += -DCONFIG_USB_AUTOSUSPEND
+
+ SUBARCH := $(shell uname -m | sed -e s/i.86/i386/)
+@@ -106,8 +125,12 @@ ARCH ?= $(SUBARCH)
+ CROSS_COMPILE ?=
+ KVER  := $(shell uname -r)
+ KSRC ?= /lib/modules/$(KVER)/build
+-MODDESTDIR := /lib/modules/$(KVER)/kernel/drivers/net/wireless/
+-INSTALL_PREFIX :=
++# Fedora uses /usr/lib/modules for kernel modules
++ifeq ($(shell test -d /usr/lib/modules/$(KVER) && echo y),y)
++    MODDESTDIR := /usr/lib/modules/$(KVER)/kernel/drivers/net/wireless/
++else
++    MODDESTDIR := /lib/modules/$(KVER)/kernel/drivers/net/wireless/
++endif
++INSTALL_PREFIX :=
+ endif
+
+ ifeq ($(CONFIG_PLATFORM_ARM_RPI), y)
+@@ -272,7 +295,7 @@ clean:
+ 	@rm -fr *.mod.c *.mod *.o .*.cmd *.ko *~
+ 	@rm -fr .tmp_versions
+ 	@rm -fr Module.symvers
+-	@rm -fr Module.markers
++	@rm -fr Module.markers ; rm -fr modules.order
+ 	@cd core ; rm -fr *.mod.c *.mod *.o .*.cmd *.ko
+ 	@cd hal ; rm -fr *.mod.c *.mod *.o .*.cmd *.ko
+ 	@cd os_dep ; rm -fr *.mod.c *.mod *.o .*.cmd *.ko
+@@ -280,7 +303,7 @@ install:
+ 	install -p -m 644 8188eu.ko  $(MODDESTDIR)
+ 	@if [ -a /lib/modules/$(KVER)/kernel/drivers/staging/rtl8188eu/r8188eu.ko ] ; then modprobe -r r8188eu; fi;
+ 	@echo "blacklist r8188eu" > /etc/modprobe.d/50-8188eu.conf
+-	@cp rtl8188eufw.bin /lib/firmware/.
++	@cp -f rtl8188eufw.bin /lib/firmware/rtlwifi/.
+ 	@/sbin/depmod -a ${KVER}
+
+ uninstall:

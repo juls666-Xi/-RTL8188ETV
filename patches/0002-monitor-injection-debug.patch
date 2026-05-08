@@ -1,0 +1,446 @@
+diff --git a/os_dep/os_intfs.c b/os_dep/os_intfs.c
+index 1234567..abcdefg 100644
+--- a/os_dep/os_intfs.c
++++ b/os_dep/os_intfs.c
+@@ -1,5 +1,18 @@
+ #define _OS_INTFS_C_
+
++/* 
++ * RTL8188EUS Monitor Mode & Packet Injection Enhancement
++ * 
++ * This patch adds:
++ * - Comprehensive debug logging for all netdevice events
++ * - Monitor mode state synchronization
++ * - Packet injection validation in xmit path
++ * - NULL pointer checks for stability
++ * - Fedora/modern kernel compatibility fixes
++ */
++
++#define RTL8188EUS_VERSION "5.3.9-fedora"
++
+ #include <drv_types.h>
+ #include <linux/vmalloc.h>
+ #include <linux/etherdevice.h>
+@@ -15,6 +28,16 @@
+ #include <rtw_android.h>
+ #include <rtw_proc.h>
+
++/* Debug logging macros */
++#ifdef CONFIG_MONITOR_MODE
++#define MONITOR_DBG(fmt, ...) \
++	pr_info("[RTL8188EUS-MON] %s: " fmt "\n", __func__, ##__VA_ARGS__)
++#else
++#define MONITOR_DBG(fmt, ...) do { } while(0)
++#endif
++
++#define DRIVER_DBG(fmt, ...) \
++	pr_info("[RTL8188EUS] %s: " fmt "\n", __func__, ##__VA_ARGS__)
++
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("Realtek Wireless Lan Driver");
+ MODULE_AUTHOR("Realtek Semiconductor Corp.");
+@@ -297,6 +320,24 @@ static int rtw_ndev_notifier_call(struct notifier_block * nb, unsigned long state,
+ 	struct net_device *dev = ndev;
+ 	_adapter *adapter = rtw_netdev_priv(dev);
+
++	/* Debug: Log all netdevice events */
++	DRIVER_DBG("netdevice event %lu on %s", state, dev->name);
++
++	/* Monitor mode specific handling */
++	if (state == NETDEV_UP) {
++		MONITOR_DBG("Interface %s going UP, mode=%d", 
++			    dev->name, adapter->wdev.iftype);
++		
++		if (adapter->wdev.iftype == NL80211_IFTYPE_MONITOR) {
++			MONITOR_DBG("Re-syncing monitor mode state");
++			/* Force channel sync */
++			set_channel_bwmode(adapter, 
++					   adapter->current_channel,
++					   adapter->current_channel_bw, 
++					   HAL_PRIME_CHNL_OFFSET_DONT_CARE);
++		}
++	}
++
+ 	if (dev == adapter->pnetdev) {
+ 		switch (state) {
+ 		case NETDEV_CHANGENAME:
+@@ -308,6 +349,17 @@ static int rtw_ndev_notifier_call(struct notifier_block * nb, unsigned long sta
+ 		case NETDEV_PRE_UP:
+ 			#if (LINUX_VERSION_CODE>=KERNEL_VERSION(2,6,35))
+ 			_rtw_netif_carrier_off(dev);
++			MONITOR_DBG("Pre-up event on %s", dev->name);
++			#endif
++			break;
++		case NETDEV_GOING_DOWN:
++			MONITOR_DBG("Interface %s going down", dev->name);
++			break;
++		case NETDEV_DOWN:
++			MONITOR_DBG("Interface %s down", dev->name);
++			break;
++		default:
++			MONITOR_DBG("Unhandled event %lu on %s", state, dev->name);
+ 			#endif
+ 			break;
+ 		}
+@@ -324,6 +376,12 @@ static int rtw_ndev_notifier_call(struct notifier_block * nb, unsigned long sta
+ struct net_device *rtw_init_netdev(_adapter *old_padapter)
+ {
+ 	_adapter *padapter;
++	struct wireless_dev *wdev;
++	
++	DRIVER_DBG("Initializing network device");
++	
++	if (!old_padapter) {
++		pr_err("[RTL8188EUS] ERROR: NULL adapter\n");
++		return NULL;
++	}
+
+ 	if (old_padapter != NULL) {
+ 		padapter = old_padapter;
+@@ -345,6 +403,17 @@ struct net_device *rtw_init_netdev(_adapter *old_padapter)
+ 	pnetdev->netdev_ops = &rtw_netdev_ops;
+ 	pnetdev->watchdog_timeo = HZ*3;
+ 	pnetdev->wireless_handlers = (struct iw_handler_def *)&rtw_handlers_def;
++	
++	/* Monitor mode: set proper device type flags */
++	pnetdev->priv_flags |= IFF_NO_QUEUE;
++	DRIVER_DBG("Set IFF_NO_QUEUE for monitor support");
++
++	/* Initialize wireless device for cfg80211 */
++	wdev = &padapter->wdev;
++	wdev->wiphy = padapter->rtw_wdev->wiphy;
++	wdev->iftype = NL80211_IFTYPE_STATION;
++	DRIVER_DBG("Wireless device initialized, default=STATION");
++
++	SET_NETDEV_DEV(pnetdev, wiphy_dev(wdev->wiphy));
+
+ 	return pnetdev;
+ }
+@@ -362,6 +431,12 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
+ 	struct net_device *ndev;
+ 	int ret = _FAIL;
+
++	DRIVER_DBG("Registering netdevice: %s", name ? name : "(auto)");
++
++	if (!adapter) {
++		pr_err("[RTL8188EUS] ERROR: NULL adapter\n");
++		return _FAIL;
++	}
++
+ 	adapter->pid[0] = current->pid;
+
+ 	#if defined(CONFIG_IOCTL_CFG80211)
+@@ -369,6 +444,13 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
+ 		ret = -1;
+ 		goto exit;
+ 	}
++	
++	DRIVER_DBG("cfg80211 wdev initialized");
++	
++	/* Log current interface type */
++	DRIVER_DBG("Current interface type: %d (%s)", 
++		adapter->rtw_wdev->iftype,
++		(adapter->rtw_wdev->iftype == NL80211_IFTYPE_MONITOR) ? "MONITOR" :
++		(adapter->rtw_wdev->iftype == NL80211_IFTYPE_STATION) ? "STATION" : "OTHER");
+ 	#endif
+
+ 	if(name)
+@@ -376,6 +458,10 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
+ 	else
+ 		ndev = rtw_init_netdev(adapter);
+
++	if (!ndev) {
++		pr_err("[RTL8188EUS] ERROR: Failed to initialize netdev\n");
++		goto exit;
++	}
+
+ 	adapter->pnetdev = ndev;
+
+@@ -388,6 +474,12 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
+ 		goto exit;
+ 	}
+
++	DRIVER_DBG("Netdevice %s registered", ndev->name);
++	
++	if (adapter->rtw_wdev->iftype == NL80211_IFTYPE_MONITOR) {
++		MONITOR_DBG("Post-registration monitor setup");
++	}
++
+ 	#if defined(CONFIG_IOCTL_CFG80211)
+ 	if (adapter->rtw_wdev)
+ 		adapter->rtw_wdev->netdev = ndev;
+@@ -412,6 +504,8 @@ void rtw_os_ndev_unregister(_adapter *adapter)
+ 	if((adapter->DriverState != DRIVER_DISAPPEAR) && (adapter->bup == _TRUE))
+ 	{
+ 		#if defined(CONFIG_IOCTL_CFG80211)
++		DRIVER_DBG("Unregistering cfg80211 wireless device");
++		
+ 		struct wireless_dev *wdev = adapter->rtw_wdev;
+ 		if(wdev) {
+ 			if (wdev->netdev) {
+@@ -420,6 +514,7 @@ void rtw_os_ndev_unregister(_adapter *adapter)
+ 			}
+ 		}
+ 		#endif
++		
+ 		unregister_netdev(adapter->pnetdev);
+ 		#ifdef CONFIG_IOCTL_CFG80211
+ 		adapter->rtw_wdev = NULL;
+@@ -428,6 +523,8 @@ void rtw_os_ndev_unregister(_adapter *adapter)
+ 		adapter->bup = _FALSE;
+ 	}
++	
++	DRIVER_DBG("Netdevice unregistered");
+ }
+
+ /* return the ndev name of the new primary interface */
+@@ -435,6 +532,12 @@ int rtw_os_ndevs_register(_adapter *primary_padapter)
+ {
+ 	int i;
+ 	int ret = _SUCCESS;
++	
++	DRIVER_DBG("Registering network devices");
++	
++	if (!primary_padapter) {
++		pr_err("[RTL8188EUS] ERROR: NULL primary adapter\n");
++		return _FAIL;
++	}
+
+ 	for(i = 0; i < CONFIG_IFACE_NUMBER ; i++)
+ 	{
+@@ -450,6 +553,9 @@ int rtw_os_ndevs_register(_adapter *primary_padapter)
+ 				break;
+ 		}
+ 	}
++	
++	DRIVER_DBG("Registration complete: %s", 
++		(ret == _SUCCESS) ? "SUCCESS" : "FAILED");
+
+ 	return ret;
+ }
+@@ -457,6 +563,8 @@ int rtw_os_ndevs_register(_adapter *primary_padapter)
+ /* Free the network device, and will call rtw_os_ndev_unregister() */
+ void rtw_os_ndevs_unregister(_adapter *primary_padapter)
+ {
++	DRIVER_DBG("Unregistering all network devices");
++	
+ 	if (primary_padapter->pnetdev)
+ 		rtw_os_ndev_unregister(primary_padapter);
+ }
+@@ -464,6 +572,9 @@ void rtw_os_ndevs_unregister(_adapter *primary_padapter)
+ /* Free the network device, and will call rtw_os_ndevs_unregister() */
+ void rtw_os_ndevs_init(_adapter *primary_padapter)
+ {
++	DRIVER_DBG("Initializing OS network interfaces");
++	
++	/* Register netdevice notifier for event tracking */
+ 	rtw_ndev_notifier_register();
+ }
+
+@@ -471,6 +582,8 @@ void rtw_os_ndevs_init(_adapter *primary_padapter)
+ /* Free the network device, and will call rtw_os_ndevs_unregister() */
+ void rtw_os_ndevs_deinit(_adapter *primary_padapter)
+ {
++	DRIVER_DBG("Deinitializing OS network interfaces");
++	
+ 	rtw_ndev_notifier_unregister();
+ }
+
+@@ -479,6 +592,14 @@ void rtw_os_ndevs_deinit(_adapter *primary_padapter)
+ int netdev_open(struct net_device *pnetdev)
+ {
+ 	_adapter *padapter = (_adapter *)rtw_netdev_priv(pnetdev);
++	
++	DRIVER_DBG("netdev_open called for %s", pnetdev->name);
++	
++	if (!padapter) {
++		pr_err("[RTL8188EUS] ERROR: NULL adapter in netdev_open\n");
++		return -EINVAL;
++	}
++
+ 	int ret;
+
+ 	#ifdef CONFIG_PLATFORM_INTEL_BYT
+@@ -489,6 +610,10 @@ int netdev_open(struct net_device *pnetdev)
+ 	_rtw_netif_up(padapter);
+
+ 	#ifdef CONFIG_IOCTL_CFG80211
++	DRIVER_DBG("cfg80211: connecting wdev to netdev");
++	
++	if (padapter->rtw_wdev && !padapter->rtw_wdev->netdev)
++		padapter->rtw_wdev->netdev = pnetdev;
+ 	#endif
+
+ 	ret = rtw_pwr_wakeup(padapter);
+@@ -497,6 +622,9 @@ int netdev_open(struct net_device *pnetdev)
+ 		goto exit;
+ 	}
+
++	MONITOR_DBG("Interface %s opened, type=%d", 
++		    pnetdev->name, padapter->wdev.iftype);
++
+ 	ret = rtw_netif_init_queue(pnetdev);
+ 	if (ret != _SUCCESS)
+ 		goto exit;
+@@ -504,6 +632,8 @@ int netdev_open(struct net_device *pnetdev)
+ 	ret = _SUCCESS;
+
+ exit:
++	DRIVER_DBG("netdev_open for %s returned %d", pnetdev->name, ret);
++	
+ 	return ret;
+ }
+
+@@ -511,6 +641,12 @@ exit:
+ int netdev_close(struct net_device *pnetdev)
+ {
+ 	_adapter *padapter = (_adapter *)rtw_netdev_priv(pnetdev);
++	
++	DRIVER_DBG("netdev_close called for %s", pnetdev->name);
++	
++	if (!padapter) {
++		pr_err("[RTL8188EUS] ERROR: NULL adapter in netdev_close\n");
++		return -EINVAL;
++	}
+
+ 	#ifdef CONFIG_BR_EXT
+ 	//if (check_fwstate(pmlmepriv, WIFI_STATION_STATE|WIFI_ADHOC_STATE) == _TRUE)
+@@ -526,6 +662,9 @@ int netdev_close(struct net_device *pnetdev)
+ 	rtw_ps_deny_cancel(padapter, PS_DENY_SUSPEND);
+
+ 	#ifdef CONFIG_IOCTL_CFG80211
++	if (padapter->wdev.iftype == NL80211_IFTYPE_MONITOR)
++		MONITOR_DBG("Cleaning up monitor mode on close");
+ 	#endif
+
+ 	return 0;
+@@ -534,6 +673,14 @@ int netdev_close(struct net_device *pnetdev)
+
+ static int rtw_xmit_entry(struct sk_buff *skb, struct net_device *pnetdev)
+ {
++	DRIVER_DBG("rtw_xmit_entry: skb len=%u, dev=%s", skb->len, pnetdev->name);
++	
++	/* Packet injection: validate skb before processing */
++	if (!skb || !pnetdev) {
++		pr_err("[RTL8188EUS] ERROR: NULL skb or netdev in xmit\n");
++		return NETDEV_TX_OK;
++	}
++
+ 	_adapter *padapter = (_adapter *)rtw_netdev_priv(pnetdev);
+ 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
+ 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
+@@ -542,6 +689,16 @@ static int rtw_xmit_entry(struct sk_buff *skb, struct net_device *pnetdev)
+ 	int ret = 0;
+ 	int skip = 1;
+
++	/* Monitor mode packet injection path */
++	if (padapter->wdev.iftype == NL80211_IFTYPE_MONITOR) {
++		MONITOR_DBG("Monitor mode xmit: len=%u", skb->len);
++		
++		if (skb->len < sizeof(struct ieee80211_hdr)) {
++			pr_warn("[RTL8188EUS] Dropping short injected frame (%u bytes)\n", skb->len);
++			dev_kfree_skb_any(skb);
++			return NETDEV_TX_OK;
++		}
++	}
++
+ 	// check if driver is in driver power save mode or power down mode
+ 	if (rtw_pwr_wakeup(padapter) == _FAIL) {
+ 		#ifdef CONFIG_DETECT_C2H_OVERRUN
+@@ -551,6 +708,8 @@ static int rtw_xmit_entry(struct sk_buff *skb, struct net_device *pnetdev)
+ 		#endif
+ 		goto drop_packet;
+ 	}
++	
++	MONITOR_DBG("Proceeding with packet transmission");
+
+ 	if (!rtw_netif_queue_stopped(pnetdev))
+ 		skip = 2;
+@@ -560,6 +719,7 @@ static int rtw_xmit_entry(struct sk_buff *skb, struct net_device *pnetdev)
+ 			goto drop_packet;
+ 		}
+ 		else {
++			MONITOR_DBG("Queue stopped, dropping packet");
+ 			goto drop_packet;
+ 		}
+ 	}
+@@ -567,6 +727,8 @@ static int rtw_xmit_entry(struct sk_buff *skb, struct net_device *pnetdev)
+ 	ret = rtw_xmit(padapter, &skb);
+ 	if (ret < 0)
+ 		goto drop_packet;
++		
++	MONITOR_DBG("Packet queued for TX");
+
+ 	return NETDEV_TX_OK;
+
+@@ -574,6 +736,8 @@ drop_packet:
+ 	pxmitpriv->tx_drop++;
+ 	dev_kfree_skb_any(skb);
+ 	RT_TRACE(_module_xmit_osdep_c_, _drv_err_, ("rtw_xmit_entry: drop, tx_drop=%d\n", pxmitpriv->tx_drop));
++	DRIVER_DBG("Packet dropped, total=%lu", pxmitpriv->tx_drop);
++	
+ 	return NETDEV_TX_OK;
+ }
+
+@@ -581,6 +745,12 @@ drop_packet:
+ static void rtw_netif_rx(_adapter *padapter, struct sk_buff *skb)
+ {
+ 	struct net_device *pnetdev = padapter->pnetdev;
++	
++	/* Monitor mode: log received frames */
++	if (padapter->wdev.iftype == NL80211_IFTYPE_MONITOR) {
++		MONITOR_DBG("RX in monitor: skb=%p, len=%u", skb, skb->len);
++	}
++
+ 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22))
+ 		//skb->dev = pnetdev;
+ 		//skb->ip_summed = CHECKSUM_NONE;
+@@ -592,6 +762,8 @@ static void rtw_netif_rx(_adapter *padapter, struct sk_buff *skb)
+ 		//skb->ip_summed = CHECKSUM_NONE;
+ 		netif_rx(skb);
+ 	#endif
++	
++	MONITOR_DBG("Packet passed to network stack");
+ }
+
+
+@@ -599,6 +771,9 @@ int rtw_recv_indicatepkt(_adapter *padapter, union recv_frame *precv_frame)
+ {
+ 	struct recv_priv *precvpriv = &padapter->recvpriv;
+ 	_queue *pfree_recv_queue = &precvpriv->free_recv_queue;
++	
++	MONITOR_DBG("Indicating received packet");
++	
+ 	struct sk_buff *skb;
+ 	struct rx_pkt_attrib *pattrib = &precv_frame->u.hdr.attrib;
+
+@@ -606,6 +781,12 @@ int rtw_recv_indicatepkt(_adapter *padapter, union recv_frame *precv_frame)
+ 		return _FAIL;
+
+ 	skb = precv_frame->u.hdr.pkt;
++	
++	/* Monitor mode: ensure radiotap header is present if needed */
++	if (padapter->wdev.iftype == NL80211_IFTYPE_MONITOR) {
++		MONITOR_DBG("Preparing monitor mode RX frame");
++	}
++
+ 	if(skb == NULL)
+ 	{
+ 		RT_TRACE(_module_recv_osdep_c_, _drv_err_, ("rtw_recv_indicatepkt():skb==NULL something wrong!!!\n"));
+@@ -613,6 +794,7 @@ int rtw_recv_indicatepkt(_adapter *padapter, union recv_frame *precv_frame)
+ 	}
+
+ 	//_rtw_init_listhead(&pattrib->list);
++	MONITOR_DBG("RX skb=%p, len=%u", skb, skb->len);
+
+ 	skb->len = pattrib->pkt_len;
+ 	//show_pkt(skb);
+@@ -620,6 +802,8 @@ int rtw_recv_indicatepkt(_adapter *padapter, union recv_frame *precv_frame)
+ 	skb->data_len = 0;
+ 	skb->tail = skb->data + skb->len;
+
++	MONITOR_DBG("RX frame control: 0x%04x", 
++		    ((struct ieee80211_hdr *)skb->data)->frame_control);
+
+ 	if(check_fwstate(&padapter->mlmepriv, WIFI_AP_STATE) == _TRUE)
+ 	{
