@@ -10,7 +10,7 @@ index 1234567..abcdefg 100644
 +EXTRA_CFLAGS += -Wno-implicit-fallthrough
 +EXTRA_CFLAGS += -Wno-address-of-packed-member
 +EXTRA_CFLAGS += -Wno-maybe-uninitialized
-+EXTRA_CFLAGS += -Wno-discarded-qualifiers
++EXTRA_CFLAGS += -Wno-incompatible-pointer-types
 +EXTRA_CFLAGS += -Wno-int-conversion
 +EXTRA_CFLAGS += -Wno-cast-function-type
 +EXTRA_CFLAGS += -Wno-format-overflow

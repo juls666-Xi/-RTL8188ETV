@@ -89,9 +89,10 @@ PACKAGE_VERSION="${DRIVER_VERSION}"
 CLEAN="make clean"
 MAKE[0]="make -j\$(nproc) KVER=\${kernelver} KSRC=/lib/modules/\${kernelver}/build"
 BUILT_MODULE_NAME[0]="${DRIVER_NAME}"
+BUILT_MODULE_LOCATION[0]=""
 DEST_MODULE_LOCATION[0]="/kernel/drivers/net/wireless"
 AUTOINSTALL="yes"
-REMAKE_INITRD="no"
+REMAKE_INITRD="yes"
 EOF
 
 # Step 6: Add DKMS module

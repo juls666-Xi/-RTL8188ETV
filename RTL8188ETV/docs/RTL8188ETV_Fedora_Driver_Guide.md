@@ -204,9 +204,10 @@ PACKAGE_VERSION="5.3.9"
 CLEAN="make clean"
 MAKE[0]="make -j$(nproc) KVER=${kernelver} KSRC=/lib/modules/${kernelver}/build"
 BUILT_MODULE_NAME[0]="8188eu"
+BUILT_MODULE_LOCATION[0]=""
 DEST_MODULE_LOCATION[0]="/kernel/drivers/net/wireless"
 AUTOINSTALL="yes"
-REMAKE_INITRD="no"
+REMAKE_INITRD="yes"
 ```
 
 ---
